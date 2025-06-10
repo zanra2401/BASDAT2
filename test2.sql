@@ -218,59 +218,31 @@ END $$
 
 DELIMITER ;
 
-
-
 DELIMITER $$
 	DROP TRIGGER IF EXISTS TRPenjualan_AFTER_INSERT $$
 	CREATE TRIGGER TRPenjualan_AFTER_INSERT
 	AFTER INSERT ON PENJUALAN_DETAIL
 	FOR EACH ROW
 	BEGIN
-		DECLARE v_id_detail VARCHAR(50);
-		DECLARE v_id_penjualan VARCHAR(50)
-		DECLARE v_id_produk VARCHAR(50);
-		DECLARE v_jumlah INT;
-		DECLARE v_subtotal DECIMAL(10,2);
-		DECLARE v_hpu DECIMAL(10,2); 
-		
-		DECLARE v_finished INT DEFAULT 0;
-		
-		DECLARE cursor_penjualan CURSOR FOR 
-		SELECT * FROM NEW;
-		
-		DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_finished = 1;
-	  	
-	  	OPEN cursor_penjualan;
-	  	
-	  	read_loop: LOOP
-	  		FETCH cursor_penjualan INTO v_id_detail, v_id_penjualan, v_id_produk, v_jumlah, v_subtotal, v_hpu;
-	  		
-	  		IF v_finished = 1 THEN
-	  			LEAVE read_loop;
-	  		END IF;
-	  		
-	  		UPDATE inventori_lokasi IL
-	  		SET IL.StokDiLokasi = IL.StokDiLokasi - v_jumlah
-	  		WHERE IL.ID_Produk = v_id_produk
-	  		AND IL.ID_Lokasi = (SELECT ID_Lokasi FROM lokasi_penyimpanan lp WHERE lp.TipeLokasi = 'Area Penjualan');
-	  		
-	  		UPDATE produk SET StokSaatIni = StokSaatIni - v_jumlah
-	  		WHERE ID_Produk = v_id_produk;
-	  		
-	  		CALL GenerateMovID(@id_pergerakan_stok_trpen);
-	  		
-	  		INSERT pergerakan_stok VALUES(
-				@id_pergerakan_stok,
-				v_id_produk,
-				'PENJUALAN',
-				0 - v_jumlah,
-				NOW(),
-				(SELECT ID_Pengguna FROM penjualan_header WHERE ID_Penjualan = NEW.ID_Penjualan),
-				"Penjualan Biasa"
-			);
-	  	END LOOP;
-	  	
-	  	CLOSE cursor_penjualan;
+  		UPDATE inventori_lokasi IL
+  		SET IL.StokDiLokasi = IL.StokDiLokasi - NEW.Jumlah
+  		WHERE IL.ID_Produk = NEW.ID_Produk
+  		AND IL.ID_Lokasi = (SELECT ID_Lokasi FROM lokasi_penyimpanan lp WHERE lp.TipeLokasi = 'Area Penjualan');
+  		
+  		UPDATE produk SET StokSaatIni = StokSaatIni - NEW.Jumlah
+  		WHERE ID_Produk = NEW.ID_Produk;
+  		
+  		CALL GenerateMovID(@id_pergerakan_stok_trpen);
+  		
+  		INSERT pergerakan_stok VALUES(
+			@id_pergerakan_stok_trpen,
+			NEW.ID_Produk,
+			'PENJUALAN',
+			0 - NEW.Jumlah,
+			NOW(),
+			(SELECT ID_Pengguna FROM penjualan_header WHERE ID_Penjualan = NEW.ID_Penjualan),
+			"Penjualan Biasa"
+		);
 	  	
 	END $$
 DELIMITER ;
@@ -282,66 +254,44 @@ DELIMITER $$
 	AFTER INSERT ON PENERIMAAN_DETAIL 
 	FOR EACH ROW
 	BEGIN	 
-		DECLARE v_id_detail VARCHAR(50);
-		DECLARE v_id_penerimaan VARCHAR(50);
-		DECLARE v_id_produk VARCHAR(50);
-		DECLARE v_id_lokasi VARCHAR(50);
-		DECLARE v_jumlah_diterima VARCHAR(50);
+		IF EXISTS(SELECT ID_Lokasi FROM inventori_lokasi IL WHERE IL.ID_Lokasi = NEW.ID_Lokasi AND IL.ID_Produk = NEW.ID_Produk) THEN
+			UPDATE INVENTORI_LOKASI IL
+		 	SET IL.StokDiLokasi = IL.StokDiLokasi + NEW.JumlahDiterima
+	    	WHERE IL.ID_Produk = NEW.ID_Produk
+	    	AND IL.ID_Lokasi = NEW.ID_Produk;
+		ELSE
+			CALL GenerateInvLocID(@id_invloc_trterima);
+       	INSERT INTO INVENTORI_LOKASI (ID_InventoriLokasi, ID_Lokasi, ID_Produk, StokDiLokasi, TanggalUpdateStok)
+       	VALUES (
+         	@id_invloc_trterima,
+         	NEW.ID_Lokasi,
+         	NEW.ID_Produk,
+         	NEW.JumlahDiterima,
+         	NOW()
+       	);
+		END IF;
 		
-		DECLARE v_finished INT DEFAULT 0;
-		
-		DECLARE cursor_penerimaan CURSOR FOR SELECT * FROM NEW;
-		DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_finished = 1;
-		
-		OPEN cursor_penerimaan;
-		
-		read_loop: LOOP
-			FETCH cursor_penerimaan INTO v_id_detail, v_id_penerimaan, v_id_produk, v_id_lokasi, v_jumlah_diterima;
-			
-			IF v_finished = 1 THEN
-				LEAVE read_loop;
-			END IF;
-			
-			IF EXISTS(SELECT ID_Lokasi FROM inventori_lokasi IL WHERE IL.ID_Lokasi = v_id_lokasi AND IL.ID_Produk = v_id_produk) THEN
-				UPDATE INVENTORI_LOKASI IL
-			 	SET IL.StokDiLokasi = IL.StokDiLokasi + v_jumlah_diterima
-		    	WHERE IL.ID_Produk = v_id_produk
-		    	AND IL.ID_Lokasi = v_id_produk;
-			ELSE
-				CALL GenerateInvLocID(@id_invloc);
-          	INSERT INTO INVENTORI_LOKASI (ID_InventoriLokasi, ID_Lokasi, ID_Produk, StokDiLokasi, TanggalUpdateStok)
-          	VALUES (
-            	@id_invloc,
-            	v_id_lokasi,
-            	v_id_produk,
-            	v_jumlah_diterima,
-            	NOW()
-          	);
-			END IF;
-			
-			UPDATE produk P
-	    	SET P.StokSaatIni = P.StokSaatIni + v_jumlah_diterima
-	    	WHERE P.ID_Produk = v_id_produk;
-	    	
-	    	CALL GenerateMovID(@id_pergerakan_stok_penerimaan);
-	    
-	    	INSERT pergerakan_stok VALUES(
-		 		@id_pergerakan_stok_penerimaan,
-		 		v_id_produk,
-		 		'Penerimaan',
-		 		v_jumlah_diterima,
-		 		NOW(),
-		 		(SELECT ID_Pengguna FROM Penerimaan_Header WHERE ID_Penerimaan = v_id_penerimaan),
-		 		"Penerimaan Barang"
-		 	);
-			
-		END LOOP;
-		
-		CLOSE cursor_penerimaan;
+		UPDATE produk P
+    	SET P.StokSaatIni = P.StokSaatIni + NEW.JumlahDiterima
+    	WHERE P.ID_Produk = NEW.ID_Produk;
+    	
+    	CALL GenerateMovID(@id_pergerakan_stok_penerimaan);
+    
+    	INSERT pergerakan_stok VALUES(
+	 		@id_pergerakan_stok_penerimaan,
+	 		NEW.ID_Produk,
+	 		'Penerimaan',
+	 		NEW.JumlahDiterima,
+	 		NOW(),
+	 		(SELECT ID_Pengguna FROM Penerimaan_Header WHERE ID_Penerimaan = NEW.ID_Penerimaan),
+	 		"Penerimaan Barang"
+	 	);
+		 	
 	END $$
 DELIMITER ;
 
 -- Penjualan CONTOH
+
 SELECT * FROM Produk WHERE ID_PRODUK = 'PROD-001';
 INSERT INTO Penjualan_Header VALUES('PJH-004', 'PNG-001', NOW(), 15000000, 1);
 INSERT INTO Penjualan_Detail VALUES('PJDET-007', 'PJH-004', 'PROD-001', 1, 15000000, 15000000);
@@ -394,6 +344,7 @@ DELIMITER $$
 	
 DELIMITER ;
 
+
 -- VIEW UNTUK DAFTAR PEMESANAN
 DROP VIEW IF EXISTS v_daftarpemesanan;
 CREATE VIEW V_DaftarPemesanan AS
@@ -411,7 +362,6 @@ SELECT
 	ph.TanggalPemesanan,
 	ph.StatusPemesanan,
 	ph.Catatan,
-	ph.HargaTotal,
 	png.NamaLengkap AS NamaPemesan
 FROM
 po_header ph,
@@ -427,6 +377,7 @@ AND
 ph.ID_Pengguna = png.ID_Pengguna
 AND
 pmk.ID_Pemasok = ph.ID_Pemasok;
+
 
 SELECT * FROM V_DaftarPemesanan;
 
@@ -458,4 +409,37 @@ ph.ID_Pengguna	 = png.ID_Pengguna
 AND
 pd.ID_Penjualan = ph.ID_Penjualan;
 
+DELIMITER $$
 
+	DROP PROCEDURE IF EXISTS SP_HPP_FIFO;
+	
+	CREATE PROCEDURE SP_HPP_FIFO(
+		IN tanggal_mulai DATETIME,
+		IN tanggal_akhir DATETIME
+	)
+	BEGIN
+		DECLARE v_hpp_terhitung DECIMAL(10, 2);
+		DECLARE v_pendapatan DECIMAL(15, 2);
+		DECLARE v_keuntunganKotor DECIMAL(15, 2);
+		
+		
+		DROP TEMPORARY TABLE IF EXISTS temp_LaporanKeuntunganFIFO;
+    	CREATE TEMPORARY TABLE temp_LaporanKeuntunganFIFO (
+        ID_Penjualan VARCHAR(50),
+        TanggalPenjualan DATETIME,
+        ID_Produk VARCHAR(50),
+        NamaProduk VARCHAR(100),
+        JumlahTerjual INT,
+        HargaPerUnitJual DECIMAL(10,2),
+        HPP_Terhitung DECIMAL(10,2),
+        Rata_HPP DECIMAL(10, 2),
+        pendapatan DECIMAL(15, 2),
+        KeuntunganKotor DECIMAL(15,2),
+        DetailAlokasi TEXT -- Untuk mendemonstrasikan dari batch mana stok diambil
+    	);
+    	
+    	
+    	
+	END $$
+	
+DELIMITER ;
